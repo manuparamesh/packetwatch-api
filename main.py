@@ -59,14 +59,19 @@ SUPABASE_URL = os.getenv("SUPABASE_URL", "")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY", "")
 
 PLATFORMS = {
-    "zomato":    {"sender":"noreply@zomato.com","subject":"Your Zomato order from","country_code":"IN","plastic_modifier":1.0,"parse_fn":"zomato"},
-    "swiggy":    {"sender":"noreply@swiggy.com","subject":"Your order from","country_code":"IN","plastic_modifier":1.0,"parse_fn":"generic"},
-    "doordash":  {"sender":"no-reply@doordash.com","subject":"Your DoorDash order","country_code":"US","plastic_modifier":0.8,"parse_fn":"generic"},
-    "uber_eats": {"sender":"uber.eats@uber.com","subject":"Your Uber Eats order","country_code":"GLOBAL","plastic_modifier":0.75,"parse_fn":"generic"},
-    "deliveroo": {"sender":"no-reply@deliveroo.co.uk","subject":"Your Deliveroo order","country_code":"GB","plastic_modifier":0.65,"parse_fn":"generic"},
-    "bolt_food": {"sender":"food@bolt.eu","subject":"Your Bolt Food order","country_code":"EU","plastic_modifier":0.7,"parse_fn":"generic"},
-    "talabat":   {"sender":"noreply@talabat.com","subject":"Your talabat order","country_code":"AE","plastic_modifier":1.1,"parse_fn":"generic"},
-    "grab_food": {"sender":"no-reply@grab.com","subject":"Your GrabFood order","country_code":"SG","plastic_modifier":1.05,"parse_fn":"generic"},
+    # India
+    "zomato":    {"sender":"noreply@zomato.com",    "subject":"Your Zomato order from",                  "country_code":"IN",     "plastic_modifier":1.0,  "parse_fn":"zomato"},
+    "swiggy":    {"sender":"noreply@swiggy.in",     "subject":"Your Swiggy order was successfully",      "country_code":"IN",     "plastic_modifier":1.0,  "parse_fn":"swiggy"},
+    # USA
+    "doordash":  {"sender":"no-reply@doordash.com", "subject":"Your DoorDash order",                     "country_code":"US",     "plastic_modifier":0.8,  "parse_fn":"generic"},
+    "uber_eats": {"sender":"uber.eats@uber.com",    "subject":"Your Uber Eats order",                    "country_code":"GLOBAL", "plastic_modifier":0.75, "parse_fn":"generic"},
+    # UK / Europe
+    "deliveroo": {"sender":"no-reply@deliveroo.co.uk","subject":"Your Deliveroo order",                  "country_code":"GB",     "plastic_modifier":0.65, "parse_fn":"generic"},
+    "bolt_food": {"sender":"food@bolt.eu",           "subject":"Your Bolt Food order",                   "country_code":"EU",     "plastic_modifier":0.7,  "parse_fn":"generic"},
+    # Middle East
+    "talabat":   {"sender":"noreply@talabat.com",   "subject":"Your talabat order",                      "country_code":"AE",     "plastic_modifier":1.1,  "parse_fn":"generic"},
+    # Southeast Asia
+    "grab_food": {"sender":"no-reply@grab.com",     "subject":"Your GrabFood order",                     "country_code":"SG",     "plastic_modifier":1.05, "parse_fn":"generic"},
 }
 
 SYSTEM_PROMPT = """
@@ -297,6 +302,8 @@ def run_pipeline(job_id: str, creds: Credentials, apps: list[str], country: str,
 
             if platform["parse_fn"] == "zomato":
                 orders = fetch_zomato_orders(service, max_orders)
+            elif platform["parse_fn"] == "swiggy":
+                orders = fetch_swiggy_orders(service, max_orders)
             else:
                 orders = fetch_generic_orders(service, platform, max_orders)
 
@@ -359,7 +366,113 @@ def fetch_zomato_orders(service, max_orders=10):
     return orders
 
 
-def fetch_generic_orders(service, platform, max_orders=10):
+def fetch_swiggy_orders(service, max_orders=10):
+    """
+    Fetch Swiggy order emails.
+    Sender: noreply@swiggy.in
+    Subject: 'Your Swiggy order was successfully delivered!'
+    Structure: Order No, Restaurant in 'Ordered from:' section, items in order summary table
+    """
+    query = 'from:noreply@swiggy.in subject:"Your Swiggy order was successfully"'
+    result = service.users().messages().list(
+        userId="me", q=query, maxResults=max_orders
+    ).execute()
+    messages = result.get("messages", [])[:max_orders]
+
+    orders = []
+    for msg_ref in messages:
+        raw = service.users().messages().get(
+            userId="me", id=msg_ref["id"], format="raw"
+        ).execute()
+        parsed = parse_swiggy_email(raw)
+        if parsed:
+            orders.append(parsed)
+        if len(orders) >= max_orders:
+            break
+    return orders
+
+
+def parse_swiggy_email(raw_message) -> Optional[dict]:
+    try:
+        msg_data = base64.urlsafe_b64decode(raw_message["raw"].encode("ASCII"))
+        msg = email.message_from_bytes(msg_data, policy=email_policy.default)
+
+        result = {
+            "order_id": None,
+            "restaurant": None,
+            "date": msg["date"],
+            "items": [],
+            "total_amount": None,
+            "source": "swiggy"
+        }
+
+        for part in msg.walk():
+            if part.get_content_type() == "text/html":
+                payload = part.get_payload(decode=True)
+                soup = BeautifulSoup(payload, "html.parser")
+                text = soup.get_text("\n", strip=True)
+                lines = [l.strip() for l in text.split("\n") if l.strip()]
+
+                for i, line in enumerate(lines):
+                    # Order number
+                    if "Order No" in line or "Order No:" in line:
+                        # Next non-empty line or inline after colon
+                        candidate = line.replace("Order No:", "").replace("Order No", "").strip()
+                        if candidate and candidate[0].isdigit():
+                            result["order_id"] = candidate
+                        elif i + 1 < len(lines) and lines[i+1][0].isdigit():
+                            result["order_id"] = lines[i+1].strip()
+
+                    # Restaurant name — comes after "Ordered from:"
+                    if line.lower().startswith("ordered from"):
+                        if i + 1 < len(lines):
+                            result["restaurant"] = lines[i+1].strip()
+
+                    # Total amount
+                    if "Total" in line and "₹" in line:
+                        result["total_amount"] = line.strip()
+                    elif line.startswith("₹") and i > 0 and "total" in lines[i-1].lower():
+                        result["total_amount"] = line.strip()
+
+                # Extract items — Swiggy emails list items with quantity x name pattern
+                # Look for patterns like "1 x Item Name" or "Item Name x 1"
+                for line in lines:
+                    stripped = line.strip()
+                    # Pattern: starts with digit, has " x " or "x"
+                    if len(stripped) > 3 and stripped[0].isdigit() and (
+                        " x " in stripped.lower() or
+                        stripped[1:3].lower() in [" x", "x "]
+                    ):
+                        result["items"].append(stripped)
+                    # Pattern: ends with "x 1", "x 2" etc
+                    elif stripped and len(stripped) > 5:
+                        import re
+                        if re.match(r'.+\s+[xX]\s+\d+$', stripped):
+                            # Reformat to "N X Item" for consistency
+                            parts = re.split(r'\s+[xX]\s+', stripped)
+                            if len(parts) == 2:
+                                result["items"].append(f"{parts[1]} X {parts[0]}")
+
+                break  # only parse HTML part
+
+        # Fallback: if no items found, use restaurant as single item
+        if not result["items"] and result["restaurant"]:
+            result["items"] = [f"1 X Order from {result['restaurant']}"]
+
+        # Need at least restaurant name to be useful
+        if not result["restaurant"]:
+            return None
+
+        if not result["order_id"]:
+            result["order_id"] = f"sw-{result['date']}"
+
+        result["items_str"] = " | ".join(result["items"])
+        result["num_items"] = len(result["items"])
+        return result
+
+    except Exception as e:
+        print(f"Swiggy parse error: {e}")
+        return None
     query = f'from:{platform["sender"]} subject:"{platform["subject"]}"'
     result = service.users().messages().list(userId="me", q=query, maxResults=max_orders).execute()
     messages = result.get("messages", [])[:max_orders]
