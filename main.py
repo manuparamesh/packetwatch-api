@@ -184,6 +184,51 @@ async def get_global_stats():
     return await supabase_get_stats()
 
 
+class FeedbackRequest(BaseModel):
+    message: str
+    country: Optional[str] = "IN"
+    total_kg: Optional[float] = None
+    rating: Optional[int] = None  # 1-5 accuracy rating
+
+
+@app.post("/feedback")
+async def submit_feedback(req: FeedbackRequest):
+    """Store user feedback about estimation accuracy."""
+    if not req.message or len(req.message.strip()) < 3:
+        raise HTTPException(status_code=400, detail="Feedback too short")
+    if len(req.message) > 2000:
+        raise HTTPException(status_code=400, detail="Feedback too long")
+
+    record = {
+        "message": req.message.strip(),
+        "country": req.country,
+        "total_kg": req.total_kg,
+        "rating": req.rating,
+    }
+    await supabase_feedback_insert(record)
+    return {"status": "thanks", "message": "Feedback saved!"}
+
+
+async def supabase_feedback_insert(record: dict):
+    if not SUPABASE_URL or not SUPABASE_KEY:
+        return
+    try:
+        async with httpx.AsyncClient() as client:
+            await client.post(
+                f"{SUPABASE_URL}/rest/v1/feedback",
+                headers={
+                    "apikey": SUPABASE_KEY,
+                    "Authorization": f"Bearer {SUPABASE_KEY}",
+                    "Content-Type": "application/json",
+                    "Prefer": "return=minimal"
+                },
+                json=record,
+                timeout=10
+            )
+    except Exception as e:
+        print(f"Supabase feedback error: {e}")
+
+
 @app.get("/auth/url")
 def get_auth_url(redirect_uri: Optional[str] = None):
     uri = redirect_uri or os.getenv("REDIRECT_URI")
