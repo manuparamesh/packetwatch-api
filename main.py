@@ -631,38 +631,58 @@ def compute_stats(orders: list[dict], country: str = "IN") -> dict:
     monthly = df.groupby("month")["total_grams"].sum().reset_index()
     monthly.columns = ["month", "plastic_grams"]
 
-    # Group by platform type
-    food_orders = df[df.get("platform_type","food") == "food"] if "platform_type" in df.columns else df
-    ecom_orders = df[df.get("platform_type","food") == "ecommerce"] if "platform_type" in df.columns else pd.DataFrame()
+    # Safely check platform_type column
+    has_platform_type = "platform_type" in df.columns
+    food_orders = df[df["platform_type"] == "food"] if has_platform_type else df
+    ecom_orders = df[df["platform_type"] == "ecommerce"] if has_platform_type else pd.DataFrame()
 
-    by_type_col = "restaurant_type" if "restaurant_type" in df.columns else "platform_type"
-    if by_type_col in df.columns:
+    # Use restaurant_type if available, else platform_type, else skip
+    if "restaurant_type" in df.columns:
+        by_type_col = "restaurant_type"
+    elif has_platform_type:
+        by_type_col = "platform_type"
+    else:
+        by_type_col = None
+
+    if by_type_col:
         by_type = df.groupby(by_type_col)["total_grams"].agg(["sum","count","mean"]).reset_index()
         by_type.columns = ["restaurant_type","total_grams","order_count","avg_grams"]
         by_type = by_type.sort_values("total_grams", ascending=False)
     else:
-        by_type = pd.DataFrame()
+        by_type = pd.DataFrame(columns=["restaurant_type","total_grams","order_count","avg_grams"])
 
     top_restaurants = df.groupby(["restaurant"])["total_grams"].agg(["sum","count"]).reset_index()
     top_restaurants.columns = ["restaurant","total_grams","order_count"]
-    top_restaurants["restaurant_type"] = df.groupby("restaurant")["platform_type"].first().values if "platform_type" in df.columns else "food"
+    if has_platform_type:
+        top_restaurants["restaurant_type"] = df.groupby("restaurant")["platform_type"].first().values
+    else:
+        top_restaurants["restaurant_type"] = "food"
     top_restaurants = top_restaurants.sort_values("total_grams", ascending=False).head(10)
 
     def safe_sum(col):
         return int(df[col].sum()) if col in df.columns else 0
 
-    per_order = df[["date","restaurant","total_grams","items_str"]].copy()
-    if "platform_type" in df.columns:
+    per_order_cols = ["date","restaurant","total_grams","items_str"]
+    per_order = df[per_order_cols].copy()
+    if has_platform_type:
         per_order["platform_type"] = df["platform_type"]
+    else:
+        per_order["platform_type"] = "food"
     if "restaurant_type" in df.columns:
         per_order["restaurant_type"] = df["restaurant_type"]
     per_order["date"] = per_order["date"].dt.strftime("%b %d, %Y")
     per_order = per_order.fillna("")
 
-    worst_type = by_type.iloc[0][by_type_col] if len(by_type) else "unknown"
+    worst_type = by_type.iloc[0]["restaurant_type"] if len(by_type) else "unknown"
     worst_avg = float(by_type.iloc[0]["avg_grams"]) if len(by_type) else 0
-    best_type = by_type.iloc[-1][by_type_col] if len(by_type) else "unknown"
+    best_type = by_type.iloc[-1]["restaurant_type"] if len(by_type) else "unknown"
     best_avg = float(by_type.iloc[-1]["avg_grams"]) if len(by_type) else 0
+
+    if by_type_col and len(by_type):
+        worst_count = df[df[by_type_col] == worst_type].shape[0]
+        potential_saving = round((worst_avg - best_avg) * worst_count, 1)
+    else:
+        potential_saving = 0
 
     return {
         "summary": {
@@ -696,8 +716,6 @@ def compute_stats(orders: list[dict], country: str = "IN") -> dict:
             "worst_category_avg_g": worst_avg,
             "best_category": best_type,
             "best_category_avg_g": best_avg,
-            "potential_saving_g": round(
-                (worst_avg - best_avg) * df[df[by_type_col] == worst_type].shape[0] if by_type_col in df.columns else 0, 1
-            )
+            "potential_saving_g": potential_saving
         }
     }
