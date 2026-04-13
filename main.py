@@ -63,31 +63,31 @@ PLATFORMS = {
     "zomato":     {"sender":"noreply@zomato.com",              "subject":"Your Zomato order from",               "country_code":"IN", "type":"food",      "plastic_modifier":1.0,  "parse_fn":"zomato"},
     "swiggy":     {"sender":"noreply@swiggy.in",               "subject":"Your Swiggy order was successfully",   "country_code":"IN", "type":"food",      "plastic_modifier":1.0,  "parse_fn":"swiggy"},
     # ── INDIA ECOMMERCE ──
-    "amazon_in":  {"sender":"shipment-tracking@amazon.in",     "subject":"Your Amazon.in order",                 "country_code":"IN", "type":"ecommerce", "plastic_modifier":1.1,  "parse_fn":"amazon"},
+    "amazon_in":  {"sender":"auto-confirm@amazon.in",          "subject":"Your Amazon.in order",                 "country_code":"IN", "type":"ecommerce", "plastic_modifier":1.1,  "parse_fn":"amazon"},
     "flipkart":   {"sender":"noreply@flipkart.com",            "subject":"Your order has been",                  "country_code":"IN", "type":"ecommerce", "plastic_modifier":1.05, "parse_fn":"ecommerce"},
     # ── USA FOOD ──
     "doordash":   {"sender":"no-reply@doordash.com",           "subject":"Your DoorDash order",                  "country_code":"US", "type":"food",      "plastic_modifier":0.8,  "parse_fn":"generic"},
     "uber_eats":  {"sender":"uber.eats@uber.com",              "subject":"Your Uber Eats order",                 "country_code":"US", "type":"food",      "plastic_modifier":0.75, "parse_fn":"generic"},
     # ── USA ECOMMERCE ──
-    "amazon_us":  {"sender":"shipment-tracking@amazon.com",    "subject":"Your Amazon.com order",                "country_code":"US", "type":"ecommerce", "plastic_modifier":0.9,  "parse_fn":"amazon"},
+    "amazon_us":  {"sender":"auto-confirm@amazon.com",    "subject":"Your Amazon.com order",                "country_code":"US", "type":"ecommerce", "plastic_modifier":0.9,  "parse_fn":"amazon"},
     "walmart":    {"sender":"help@walmart.com",                "subject":"Your Walmart order",                   "country_code":"US", "type":"ecommerce", "plastic_modifier":0.85, "parse_fn":"ecommerce"},
     # ── UK FOOD ──
     "deliveroo":  {"sender":"no-reply@deliveroo.co.uk",        "subject":"Your Deliveroo order",                 "country_code":"GB", "type":"food",      "plastic_modifier":0.65, "parse_fn":"generic"},
     "uber_eats_gb":{"sender":"uber.eats@uber.com",             "subject":"Your Uber Eats order",                 "country_code":"GB", "type":"food",      "plastic_modifier":0.65, "parse_fn":"generic"},
     # ── UK ECOMMERCE ──
-    "amazon_uk":  {"sender":"shipment-tracking@amazon.co.uk",  "subject":"Your Amazon.co.uk order",              "country_code":"GB", "type":"ecommerce", "plastic_modifier":0.8,  "parse_fn":"amazon"},
+    "amazon_uk":  {"sender":"auto-confirm@amazon.co.uk",  "subject":"Your Amazon.co.uk order",              "country_code":"GB", "type":"ecommerce", "plastic_modifier":0.8,  "parse_fn":"amazon"},
     "asos":       {"sender":"noreply@asos.com",                "subject":"Your ASOS order",                      "country_code":"GB", "type":"ecommerce", "plastic_modifier":0.75, "parse_fn":"ecommerce"},
     # ── EUROPE FOOD ──
     "bolt_food":  {"sender":"food@bolt.eu",                    "subject":"Your Bolt Food order",                 "country_code":"EU", "type":"food",      "plastic_modifier":0.7,  "parse_fn":"generic"},
     "deliveroo_eu":{"sender":"no-reply@deliveroo.fr",          "subject":"Your Deliveroo order",                 "country_code":"EU", "type":"food",      "plastic_modifier":0.65, "parse_fn":"generic"},
     # ── EUROPE ECOMMERCE ──
-    "amazon_eu":  {"sender":"shipment-tracking@amazon.de",     "subject":"Your Amazon order",                    "country_code":"EU", "type":"ecommerce", "plastic_modifier":0.75, "parse_fn":"amazon"},
+    "amazon_eu":  {"sender":"auto-confirm@amazon.de",     "subject":"Your Amazon order",                    "country_code":"EU", "type":"ecommerce", "plastic_modifier":0.75, "parse_fn":"amazon"},
     "zalando":    {"sender":"orders@zalando.com",              "subject":"Your Zalando order",                   "country_code":"EU", "type":"ecommerce", "plastic_modifier":0.7,  "parse_fn":"ecommerce"},
     # ── MIDDLE EAST FOOD ──
     "talabat":    {"sender":"noreply@talabat.com",             "subject":"Your talabat order",                   "country_code":"AE", "type":"food",      "plastic_modifier":1.1,  "parse_fn":"generic"},
     "uber_eats_ae":{"sender":"uber.eats@uber.com",             "subject":"Your Uber Eats order",                 "country_code":"AE", "type":"food",      "plastic_modifier":1.0,  "parse_fn":"generic"},
     # ── MIDDLE EAST ECOMMERCE ──
-    "amazon_ae":  {"sender":"shipment-tracking@amazon.ae",     "subject":"Your Amazon.ae order",                 "country_code":"AE", "type":"ecommerce", "plastic_modifier":1.1,  "parse_fn":"amazon"},
+    "amazon_ae":  {"sender":"auto-confirm@amazon.ae",     "subject":"Your Amazon.ae order",                 "country_code":"AE", "type":"ecommerce", "plastic_modifier":1.1,  "parse_fn":"amazon"},
     "noon":       {"sender":"noreply@noon.com",                "subject":"Your noon order",                      "country_code":"AE", "type":"ecommerce", "plastic_modifier":1.05, "parse_fn":"ecommerce"},
     # ── SE ASIA FOOD ──
     "grab_food":  {"sender":"no-reply@grab.com",               "subject":"Your GrabFood order",                  "country_code":"SG", "type":"food",      "plastic_modifier":1.05, "parse_fn":"generic"},
@@ -500,34 +500,86 @@ def fetch_amazon_orders(service, platform: dict, max_orders=10):
     return orders
 
 def parse_amazon_email(raw_message, platform: dict) -> Optional[dict]:
+    """
+    Amazon order confirmation emails from auto-confirm@amazon.in
+    Structure: Order # at top, then product name as anchor text with category below
+    e.g. "Tribit XFree Color Bluetooth Earbuds..." + "Electronics" + "Sold by: ..."
+    """
     try:
         msg_data = base64.urlsafe_b64decode(raw_message["raw"].encode("ASCII"))
         msg = email.message_from_bytes(msg_data, policy=email_policy.default)
-        result = {"order_id": f"amz-{uuid.uuid4().hex[:8]}", "restaurant": platform.get("sender","amazon").split("@")[-1].split(".")[0].title(),
-                  "date": msg["date"], "items": [], "total_amount": None,
-                  "source": "amazon", "platform_type": "ecommerce"}
+
+        result = {
+            "order_id": f"amz-{uuid.uuid4().hex[:8]}",
+            "restaurant": "Amazon",
+            "date": msg["date"],
+            "items": [],
+            "total_amount": None,
+            "source": "amazon",
+            "platform_type": "ecommerce"
+        }
+
         for part in msg.walk():
             if part.get_content_type() == "text/html":
                 soup = BeautifulSoup(part.get_payload(decode=True), "html.parser")
-                text = soup.get_text("\n", strip=True)
-                lines = [l.strip() for l in text.split("\n") if l.strip()]
+
+                # Extract order number
                 import re
-                for i, line in enumerate(lines):
-                    if re.match(r'\d{3}-\d{7}-\d{7}', line):
-                        result["order_id"] = line.strip()
-                    if "Order #" in line or "Order ID" in line:
-                        result["order_id"] = line.replace("Order #","").replace("Order ID","").strip()
-                    if len(line) > 15 and len(line) < 150 and not any(w in line.lower() for w in
-                        ["amazon","delivery","shipped","order","track","address","payment","total","hello","dear"]):
-                        result["items"].append(line)
+                full_text = soup.get_text(" ", strip=True)
+                order_match = re.search(r'\d{3}-\d{7}-\d{7}', full_text)
+                if order_match:
+                    result["order_id"] = order_match.group()
+
+                # Extract product names from anchor tags — Amazon product links
+                # contain long descriptive product names
+                product_links = soup.find_all("a", href=True)
+                for link in product_links:
+                    href = link.get("href", "")
+                    text = link.get_text(strip=True)
+                    # Amazon product links contain /dp/ or /gp/product
+                    # Product names are long (>30 chars) and not navigation links
+                    if (len(text) > 30 and
+                        not any(skip in text.lower() for skip in
+                            ["view", "manage", "track", "account", "order", "click here",
+                             "unsubscribe", "help", "amazon.in", "amazon.com", "visit"])):
+                        # Clean up the product name — truncate at 80 chars
+                        clean = text[:80].strip()
+                        if clean and clean not in result["items"]:
+                            result["items"].append(clean)
+
+                # Fallback: look for product category lines near prices
+                if not result["items"]:
+                    lines = [l.strip() for l in soup.get_text("\n", strip=True).split("\n") if l.strip()]
+                    skip_words = ["amazon", "order", "delivery", "shipping", "hello", "thank",
+                                  "prime", "view", "manage", "track", "sold by", "fulfilled",
+                                  "subtotal", "total", "handling", "arriving", "estimated"]
+                    categories = ["Electronics", "Books", "Clothing", "Kitchen", "Sports",
+                                  "Beauty", "Toys", "Home", "Garden", "Automotive", "Baby",
+                                  "Music", "Movies", "Software", "Grocery", "Health"]
+
+                    for i, line in enumerate(lines):
+                        # Lines that look like product names: long, not a skip word, has mixed case
+                        if (len(line) > 25 and
+                            not any(w in line.lower() for w in skip_words) and
+                            not line.startswith("Rs") and
+                            not line.startswith("$") and
+                            line[0].isupper()):
+                            result["items"].append(line[:80])
+                        if len(result["items"]) >= 5:
+                            break
+
                 break
+
         if not result["items"]:
             result["items"] = ["1 X Online order item"]
+
         result["items"] = result["items"][:5]
         result["items_str"] = " | ".join(result["items"])
         result["num_items"] = len(result["items"])
         return result
-    except Exception:
+
+    except Exception as e:
+        print(f"Amazon parse error: {e}")
         return None
 
 def fetch_generic_orders(service, platform: dict, max_orders=10):
